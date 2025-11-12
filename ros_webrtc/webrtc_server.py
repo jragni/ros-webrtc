@@ -16,7 +16,7 @@ from av import VideoFrame
 import cv2
 import numpy as np
 
-from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
+from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack, RTCConfiguration, RTCIceServer
 
 import rclpy
 from rclpy.node import Node
@@ -160,10 +160,13 @@ async def offer(request: web.Request) -> web.Response:
 
         offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
 
-        # Create peer connection
-        # Note: For localtunnel setup, we don't need STUN servers
-        # as the connection goes through the tunnel, not peer-to-peer
-        pc = RTCPeerConnection()
+        # Create peer connection with ICE servers for tunnel compatibility
+        ice_servers = [
+            RTCIceServer(urls="stun:stun.l.google.com:19302"),
+            RTCIceServer(urls="stun:stun1.l.google.com:19302"),
+        ]
+        configuration = RTCConfiguration(iceServers=ice_servers)
+        pc = RTCPeerConnection(configuration=configuration)
         ros_node.pcs.add(pc)
 
         @pc.on("connectionstatechange")
@@ -172,6 +175,10 @@ async def offer(request: web.Request) -> web.Response:
             if pc.connectionState in ("failed", "closed"):
                 await pc.close()
                 ros_node.pcs.discard(pc)
+
+        @pc.on("iceconnectionstatechange")
+        async def on_iceconnectionstatechange():
+            logger.info(f"ICE connection state: {pc.iceConnectionState}")
 
         # IMPORTANT: Set remote description FIRST, then add track
         # This ensures m-line order matches between offer and answer
@@ -257,7 +264,8 @@ def main(args=None):
     # Create aiohttp app
     app = web.Application()
 
-    # Configure CORS
+    # Configure CORS - Allow all origins for tunnel compatibility
+    # This allows ngrok, localtunnel, Cloudflare tunnels, etc.
     cors = aiohttp_cors.setup(app, defaults={
         "*": aiohttp_cors.ResourceOptions(
             allow_credentials=True,
@@ -266,6 +274,7 @@ def main(args=None):
             allow_methods=["GET", "POST", "HEAD", "OPTIONS"]
         )
     })
+
 
     # Add routes and enable CORS
     health_route = app.router.add_get("/", health)
